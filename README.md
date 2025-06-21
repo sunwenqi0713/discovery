@@ -1,2 +1,3 @@
-# neuron
-A high performance publish-subscribe, client-server cross-plattform middleware.
+# discovery
+
+一个轻量级、跨平台的C++库，用于在局域网中自动发现和识别网络设备。
