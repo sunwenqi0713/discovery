@@ -241,7 +241,7 @@ discovery/
 
 | 平台 | 状态 | 备注 |
 |------|------|------|
-| Windows 10+ | ✅ | 需要 ws2_32 库 |
+| Windows 10+ | ✅ | VS 2017 15.7+ / VS 2019 / VS 2022 / VS 2026，需要 ws2_32 库 |
 | Linux | ✅ | GCC 7+ / Clang 5+ |
 | macOS | ✅ | Xcode 10+ |
 

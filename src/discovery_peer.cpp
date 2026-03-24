@@ -140,7 +140,9 @@ class PeerEnv : public PeerEnvInterface, public std::enable_shared_from_this<Pee
 
     {
       int value = 1;
-      setsockopt(sock_, SOL_SOCKET, SO_BROADCAST, reinterpret_cast<const char*>(&value), sizeof(value));
+      if (setsockopt(sock_, SOL_SOCKET, SO_BROADCAST, reinterpret_cast<const char*>(&value), sizeof(value)) < 0) {
+        std::cerr << "discovery::Peer failed to enable broadcast on socket." << std::endl;
+      }
     }
 
     if (parameters_.can_discover()) {
@@ -155,12 +157,16 @@ class PeerEnv : public PeerEnvInterface, public std::enable_shared_from_this<Pee
 
       {
         int reuse_addr = 1;
-        setsockopt(binding_sock_, SOL_SOCKET, SO_REUSEADDR, reinterpret_cast<const char*>(&reuse_addr),
-                   sizeof(reuse_addr));
+        if (setsockopt(binding_sock_, SOL_SOCKET, SO_REUSEADDR, reinterpret_cast<const char*>(&reuse_addr),
+                       sizeof(reuse_addr)) < 0) {
+          std::cerr << "discovery::Peer failed to set SO_REUSEADDR." << std::endl;
+        }
 #ifdef SO_REUSEPORT
         int reuse_port = 1;
-        setsockopt(binding_sock_, SOL_SOCKET, SO_REUSEPORT, reinterpret_cast<const char*>(&reuse_port),
-                   sizeof(reuse_port));
+        if (setsockopt(binding_sock_, SOL_SOCKET, SO_REUSEPORT, reinterpret_cast<const char*>(&reuse_port),
+                       sizeof(reuse_port)) < 0) {
+          std::cerr << "discovery::Peer failed to set SO_REUSEPORT." << std::endl;
+        }
 #endif
       }
 
@@ -168,7 +174,15 @@ class PeerEnv : public PeerEnvInterface, public std::enable_shared_from_this<Pee
         ip_mreq mreq{};
         mreq.imr_multiaddr.s_addr = htonl(parameters_.multicast_group_address());
         mreq.imr_interface.s_addr = INADDR_ANY;
-        setsockopt(binding_sock_, IPPROTO_IP, IP_ADD_MEMBERSHIP, reinterpret_cast<const char*>(&mreq), sizeof(mreq));
+        if (setsockopt(binding_sock_, IPPROTO_IP, IP_ADD_MEMBERSHIP, reinterpret_cast<const char*>(&mreq),
+                       sizeof(mreq)) < 0) {
+          CloseSocket(binding_sock_);
+          binding_sock_ = kInvalidSocket;
+          CloseSocket(sock_);
+          sock_ = kInvalidSocket;
+          std::cerr << "discovery::Peer failed to join multicast group." << std::endl;
+          return false;
+        }
       }
 
       sockaddr_in addr{};
@@ -214,15 +228,18 @@ class PeerEnv : public PeerEnvInterface, public std::enable_shared_from_this<Pee
     int64_t last_delete_idle_ms = 0;
 
     while (true) {
+      bool should_exit = false;
       {
         std::lock_guard<std::mutex> lock(mutex_);
-        if (exit_) {
-          for (int protocol_version = static_cast<int>(parameters_.min_supported_protocol_version());
-               protocol_version <= static_cast<int>(parameters_.max_supported_protocol_version()); ++protocol_version) {
-            sendPacket(true, static_cast<ProtocolVersion>(protocol_version), kPacketIAmOutOfHere);
-          }
-          return;
+        should_exit = exit_;
+      }
+
+      if (should_exit) {
+        for (int protocol_version = static_cast<int>(parameters_.min_supported_protocol_version());
+             protocol_version <= static_cast<int>(parameters_.max_supported_protocol_version()); ++protocol_version) {
+          sendPacket(static_cast<ProtocolVersion>(protocol_version), kPacketIAmOutOfHere);
         }
+        return;
       }
 
       int64_t cur_time_ms = NowTime();
@@ -232,7 +249,7 @@ class PeerEnv : public PeerEnvInterface, public std::enable_shared_from_this<Pee
         if (IsRightTime(last_send_time_ms, cur_time_ms, parameters_.send_timeout_ms(), to_sleep_ms)) {
           for (int protocol_version = static_cast<int>(parameters_.min_supported_protocol_version());
                protocol_version <= static_cast<int>(parameters_.max_supported_protocol_version()); ++protocol_version) {
-            sendPacket(false, static_cast<ProtocolVersion>(protocol_version), kPacketIAmHere);
+            sendPacket(static_cast<ProtocolVersion>(protocol_version), kPacketIAmHere);
           }
           last_send_time_ms = cur_time_ms;
         }
@@ -256,14 +273,13 @@ class PeerEnv : public PeerEnvInterface, public std::enable_shared_from_this<Pee
   }
 
   void ReceivingThreadFunc() {
+    std::string buffer(kMaxPacketSize, '\0');
+
     while (true) {
       sockaddr_in from_addr{};
       AddressLenType addr_length = sizeof(sockaddr_in);
 
-      std::string buffer;
-      buffer.resize(kMaxPacketSize);
-
-      auto length = recvfrom(binding_sock_, &buffer[0], static_cast<int>(buffer.size()), 0,
+      auto length = recvfrom(binding_sock_, &buffer[0], static_cast<int>(kMaxPacketSize), 0,
                              reinterpret_cast<sockaddr*>(&from_addr), &addr_length);
 
       {
@@ -281,8 +297,8 @@ class PeerEnv : public PeerEnvInterface, public std::enable_shared_from_this<Pee
       from.set_port(ntohs(from_addr.sin_port));
       from.set_ip(ntohl(from_addr.sin_addr.s_addr));
 
-      buffer.resize(static_cast<size_t>(length));
-      processReceivedBuffer(NowTime(), from, buffer);
+      std::string received(buffer.data(), static_cast<size_t>(length));
+      processReceivedBuffer(NowTime(), from, received);
     }
   }
 
@@ -344,23 +360,21 @@ class PeerEnv : public PeerEnvInterface, public std::enable_shared_from_this<Pee
     });
   }
 
-  void sendPacket(bool under_lock, ProtocolVersion protocol_version, PacketType packet_type) {
+  void sendPacket(ProtocolVersion protocol_version, PacketType packet_type) {
     std::string user_data;
-    if (!under_lock) {
+    uint64_t packet_idx;
+    {
       std::lock_guard<std::mutex> lock(mutex_);
       user_data = user_data_;
-    } else {
-      user_data = user_data_;
+      packet_idx = packet_index_++;
     }
 
     Packet packet;
     packet.set_packet_type(packet_type);
     packet.set_application_id(parameters_.application_id());
     packet.set_peer_id(peer_id_);
-    packet.set_snapshot_index(packet_index_);
+    packet.set_snapshot_index(packet_idx);
     packet.SwapUserData(user_data);
-
-    ++packet_index_;
 
     std::string packet_data;
     if (!packet.Serialize(protocol_version, packet_data)) {
@@ -381,8 +395,10 @@ class PeerEnv : public PeerEnvInterface, public std::enable_shared_from_this<Pee
       addr.sin_addr.s_addr = htonl(parameters_.multicast_group_address());
     }
 
-    sendto(sock_, packet_data.data(), static_cast<int>(packet_data.size()), 0, reinterpret_cast<sockaddr*>(&addr),
-           sizeof(sockaddr_in));
+    if (sendto(sock_, packet_data.data(), static_cast<int>(packet_data.size()), 0,
+               reinterpret_cast<sockaddr*>(&addr), sizeof(sockaddr_in)) < 0) {
+      std::cerr << "discovery::Peer failed to send packet." << std::endl;
+    }
   }
 
   PeerParameters parameters_;
@@ -448,18 +464,17 @@ void Peer::Stop(bool wait_for_threads) {
   env_->Exit();
   env_.reset();
 
-  if (wait_for_threads) {
-    if (sending_thread_ && sending_thread_->joinable()) {
+  if (sending_thread_ && sending_thread_->joinable()) {
+    if (wait_for_threads) {
       sending_thread_->join();
-    }
-    if (receiving_thread_ && receiving_thread_->joinable()) {
-      receiving_thread_->join();
-    }
-  } else {
-    if (sending_thread_ && sending_thread_->joinable()) {
+    } else {
       sending_thread_->detach();
     }
-    if (receiving_thread_ && receiving_thread_->joinable()) {
+  }
+  if (receiving_thread_ && receiving_thread_->joinable()) {
+    if (wait_for_threads) {
+      receiving_thread_->join();
+    } else {
       receiving_thread_->detach();
     }
   }
