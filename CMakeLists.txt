@@ -21,7 +21,6 @@ option(discovery_BUILD_EXAMPLES "Build examples" ON)
 
 # Source files
 set(discovery_HEADERS
-    include/discovery/discovery_protocol_version.h
     include/discovery/discovery_protocol.h
     include/discovery/discovery_ip_port.h
     include/discovery/discovery_peer_parameters.h

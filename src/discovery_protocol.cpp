@@ -18,15 +18,6 @@ bool SerializeString(SerializeDirection direction, std::string* value, size_t va
   return true;
 }
 
-ProtocolVersion GetProtocolVersion(uint8_t version) {
-  if (version == static_cast<uint8_t>(kProtocolVersion0)) {
-    return kProtocolVersion0;
-  } else if (version == static_cast<uint8_t>(kProtocolVersion1)) {
-    return kProtocolVersion1;
-  }
-  return kProtocolVersionUnknown;
-}
-
 PacketType GetPacketType(uint8_t packet_type) {
   if (packet_type == static_cast<uint8_t>(kPacketIAmHere)) {
     return kPacketIAmHere;
@@ -38,78 +29,53 @@ PacketType GetPacketType(uint8_t packet_type) {
 
 }  // namespace impl
 
-bool Packet::Serialize(ProtocolVersion protocol_version, std::string& buffer_out) {
-  if (protocol_version == kProtocolVersion0) {
-    if (user_data_.size() > kMaxUserDataSizeV0) {
-      return false;
-    }
-  } else if (protocol_version == kProtocolVersion1) {
-    if (user_data_.size() > kMaxUserDataSizeV1) {
-      return false;
-    }
+bool Packet::Serialize(std::string& buffer_out) {
+  if (user_data_.size() > kMaxUserDataSize) {
+    return false;
   }
-
   impl::BufferView buffer_view(&buffer_out);
-  return Serialize(protocol_version, impl::kSerialize, &buffer_view);
+  return SerializeBody(impl::kSerialize, &buffer_view);
 }
 
-ProtocolVersion Packet::Parse(const std::string& buffer) {
-  impl::BufferView buffer_view(const_cast<std::string*>(&buffer));
+bool Packet::Parse(const std::string& buffer) {
+  impl::BufferView buffer_view(buffer.data(), buffer.size());
 
-  uint8_t magic[4];
-  for (auto& m : magic) {
-    if (!impl::SerializeUnsignedIntegerBigEndian(impl::kParse, &m, &buffer_view)) {
-      return kProtocolVersionUnknown;
-    }
-  }
-
-  uint8_t version = static_cast<uint8_t>(kProtocolVersion0);
-  if (!impl::SerializeUnsignedIntegerBigEndian(impl::kParse, &version, &buffer_view)) {
-    return kProtocolVersionUnknown;
-  }
-
-  ProtocolVersion protocol_version = kProtocolVersionUnknown;
-  if (magic[0] == 'R' && magic[1] == 'N' && magic[2] == '6' && magic[3] == 'U') {
-    protocol_version = kProtocolVersion0;
-  } else if (magic[0] == 'S' && magic[1] == 'O' && magic[2] == '7' && magic[3] == 'V') {
-    protocol_version = impl::GetProtocolVersion(version);
-    if (protocol_version == kProtocolVersionUnknown || protocol_version == kProtocolVersion0) {
-      return kProtocolVersionUnknown;
-    }
-  }
-
-  if (protocol_version == kProtocolVersionUnknown) {
-    return kProtocolVersionUnknown;
-  }
-
-  if (!Serialize(protocol_version, impl::kParse, &buffer_view)) {
-    return kProtocolVersionUnknown;
-  }
-
-  return protocol_version;
-}
-
-bool Packet::Serialize(ProtocolVersion protocol_version, impl::SerializeDirection direction,
-                       impl::BufferView* buffer_view) {
-  if (direction == impl::kSerialize) {
-    if (protocol_version == kProtocolVersion0) {
-      buffer_view->push_back('R');
-      buffer_view->push_back('N');
-      buffer_view->push_back('6');
-      buffer_view->push_back('U');
-    } else if (protocol_version == kProtocolVersion1) {
-      buffer_view->push_back('S');
-      buffer_view->push_back('O');
-      buffer_view->push_back('7');
-      buffer_view->push_back('V');
-    } else {
+  // Verify the 4-byte magic signature that identifies this protocol.
+  const char kMagic[] = {'D', 'S', 'C', 'V'};
+  for (char expected : kMagic) {
+    uint8_t byte = 0;
+    if (!impl::SerializeUnsignedIntegerBigEndian(impl::kParse, &byte, &buffer_view)) {
       return false;
     }
+    if (byte != static_cast<uint8_t>(expected)) {
+      return false;
+    }
+  }
 
-    uint8_t version = static_cast<uint8_t>(protocol_version);
+  // Reject packets from unknown or future protocol versions.
+  constexpr uint8_t kCurrentVersion = 1;
+  uint8_t version = 0;
+  if (!impl::SerializeUnsignedIntegerBigEndian(impl::kParse, &version, &buffer_view)) {
+    return false;
+  }
+  if (version != kCurrentVersion) {
+    return false;
+  }
+
+  return SerializeBody(impl::kParse, &buffer_view);
+}
+
+bool Packet::SerializeBody(impl::SerializeDirection direction, impl::BufferView* buffer_view) {
+  if (direction == impl::kSerialize) {
+    buffer_view->push_back('D');
+    buffer_view->push_back('S');
+    buffer_view->push_back('C');
+    buffer_view->push_back('V');
+    uint8_t version = 1;
     impl::SerializeUnsignedIntegerBigEndian(impl::kSerialize, &version, buffer_view);
   }
 
+  // Three reserved bytes follow the version field (reserved for future use).
   uint8_t reserved = 0;
   for (int i = 0; i < 3; ++i) {
     if (!impl::SerializeUnsignedIntegerBigEndian(direction, &reserved, buffer_view)) {
@@ -120,7 +86,6 @@ bool Packet::Serialize(ProtocolVersion protocol_version, impl::SerializeDirectio
   if (!impl::SerializeUnsignedIntegerBigEndian(direction, &packet_type_, buffer_view)) {
     return false;
   }
-
   if (direction == impl::kParse) {
     if (impl::GetPacketType(packet_type_) == kPacketTypeUnknown) {
       return false;
@@ -145,32 +110,11 @@ bool Packet::Serialize(ProtocolVersion protocol_version, impl::SerializeDirectio
   }
 
   if (direction == impl::kParse) {
-    if (protocol_version == kProtocolVersion0) {
-      if (user_data_size > kMaxUserDataSizeV0) {
-        return false;
-      }
-    } else if (protocol_version == kProtocolVersion1) {
-      if (user_data_size > kMaxUserDataSizeV1) {
-        return false;
-      }
-    }
-  }
-
-  uint16_t padding_size = 0;
-  if (protocol_version == kProtocolVersion0) {
-    if (!impl::SerializeUnsignedIntegerBigEndian(direction, &padding_size, buffer_view)) {
+    if (user_data_size > kMaxUserDataSize) {
       return false;
     }
-
-    if (padding_size > kMaxPaddingSizeV0) {
-      return false;
-    }
-  }
-
-  // End of serializing header.
-
-  if (direction == impl::kParse) {
-    if (buffer_view->LeftUnparsed() != user_data_size + padding_size) {
+    // Ensure the remaining bytes match the declared payload length exactly.
+    if (buffer_view->LeftUnparsed() != user_data_size) {
       return false;
     }
   }
@@ -178,8 +122,6 @@ bool Packet::Serialize(ProtocolVersion protocol_version, impl::SerializeDirectio
   if (!impl::SerializeString(direction, &user_data_, user_data_size, buffer_view)) {
     return false;
   }
-
-  // Do not serialize padding even for protocol version 0.
 
   return true;
 }

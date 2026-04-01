@@ -3,37 +3,47 @@
 #include <cstdint>
 #include <string>
 
-#include "discovery_protocol_version.h"
-
 namespace discovery {
 
 namespace impl {
 
+// A lightweight cursor over a byte buffer used for binary serialization and
+// parsing. Wraps either a mutable string (write mode) or a const byte span
+// (read-only mode) to avoid unnecessary copies or const_cast.
 class BufferView {
  public:
-  BufferView() = default;
-  explicit BufferView(std::string* buffer) : buffer_(buffer) {}
+  // Write mode: appends serialized bytes to buffer.
+  explicit BufferView(std::string* buffer) : write_buffer_(buffer), read_data_(nullptr), read_size_(0) {}
 
-  std::string* buffer() { return buffer_; }
+  // Read-only mode: reads from an existing byte range without copying.
+  BufferView(const char* data, size_t size) : write_buffer_(nullptr), read_data_(data), read_size_(size) {}
 
-  void push_back(char c) { buffer_->push_back(c); }
+  void push_back(char c) { write_buffer_->push_back(c); }
 
-  void InsertBack(const std::string& s, size_t size) { buffer_->insert(buffer_->end(), s.begin(), s.begin() + size); }
+  void InsertBack(const std::string& s, size_t size) {
+    write_buffer_->insert(write_buffer_->end(), s.begin(), s.begin() + size);
+  }
 
   size_t parsed() const { return parsed_; }
 
-  size_t LeftUnparsed() const { return buffer_->size() - parsed_; }
+  size_t LeftUnparsed() const {
+    return (write_buffer_ ? write_buffer_->size() : read_size_) - parsed_;
+  }
 
-  bool CanRead(size_t num_bytes) const { return (parsed_ + num_bytes <= buffer_->size()); }
+  bool CanRead(size_t num_bytes) const {
+    return parsed_ + num_bytes <= (write_buffer_ ? write_buffer_->size() : read_size_);
+  }
 
   char Read() {
-    char c = buffer_->at(parsed_);
+    char c = write_buffer_ ? (*write_buffer_)[parsed_] : read_data_[parsed_];
     ++parsed_;
     return c;
   }
 
  private:
-  std::string* buffer_ = nullptr;
+  std::string* write_buffer_ = nullptr;
+  const char* read_data_ = nullptr;
+  size_t read_size_ = 0;
   size_t parsed_ = 0;
 };
 
@@ -42,10 +52,10 @@ enum class SerializeDirection {
   kParse,
 };
 
-// Convenience aliases for backward compatibility
 constexpr SerializeDirection kSerialize = SerializeDirection::kSerialize;
 constexpr SerializeDirection kParse = SerializeDirection::kParse;
 
+// Serializes or parses an unsigned integer in big-endian byte order.
 template <typename ValueType>
 bool SerializeUnsignedIntegerBigEndian(SerializeDirection direction, ValueType* value, BufferView* buffer_view) {
   constexpr size_t n = sizeof(ValueType);
@@ -72,19 +82,16 @@ bool SerializeUnsignedIntegerBigEndian(SerializeDirection direction, ValueType* 
 
 bool SerializeString(SerializeDirection direction, std::string* value, size_t value_size, BufferView* buffer_view);
 
-ProtocolVersion GetProtocolVersion(uint8_t version);
-
 }  // namespace impl
 
-constexpr size_t kMaxUserDataSizeV0 = 32768;
-constexpr size_t kMaxPaddingSizeV0 = 32768;
-constexpr size_t kMaxUserDataSizeV1 = 4096;
-// Used for receiving buffer.
+// Maximum number of bytes allowed in the user_data payload.
+constexpr size_t kMaxUserDataSize = 4096;
+
+// Maximum UDP datagram size used for the receive buffer.
 constexpr size_t kMaxPacketSize = 65536;
 
 enum class PacketType : uint8_t { kIAmHere = 0, kIAmOutOfHere = 1, kUnknown = 255 };
 
-// Convenience aliases for backward compatibility
 constexpr PacketType kPacketIAmHere = PacketType::kIAmHere;
 constexpr PacketType kPacketIAmOutOfHere = PacketType::kIAmOutOfHere;
 constexpr PacketType kPacketTypeUnknown = PacketType::kUnknown;
@@ -93,6 +100,11 @@ namespace impl {
 PacketType GetPacketType(uint8_t packet_type);
 }  // namespace impl
 
+// Represents a single discovery protocol packet.
+//
+// Supports binary serialization (Serialize) and deserialization (Parse).
+// The wire format uses magic bytes "SO7V" followed by a version byte and
+// fixed-size header fields, with a variable-length user data payload.
 class Packet {
  public:
   Packet() = default;
@@ -113,19 +125,16 @@ class Packet {
   void set_user_data(const std::string& user_data) { user_data_ = user_data; }
   void SwapUserData(std::string& user_data) { std::swap(user_data_, user_data); }
 
-  // Writes the packet to the buffer for sending. Uses provided protocol_version
-  // to construct data on wire. This function should return false in the case
-  // when it is not possible to convert the current packet representation to
-  // the wire representation of the given version. The caller can reserve memory
-  // in the buffer_out and no memory will be allocated in this function.
-  bool Serialize(ProtocolVersion protocol_version, std::string& buffer_out);
+  // Serializes this packet into buffer_out. Returns false if user_data
+  // exceeds kMaxUserDataSize or another serialization error occurs.
+  bool Serialize(std::string& buffer_out);
 
-  // Parses the provided buffer and returns the detected protocol version. If
-  // parsing fails then kProtocolVersionUnknown is returned.
-  ProtocolVersion Parse(const std::string& buffer);
+  // Parses buffer into this packet. Returns false if the buffer does not
+  // contain a valid packet (wrong magic, unknown version, truncated data).
+  bool Parse(const std::string& buffer);
 
  private:
-  bool Serialize(ProtocolVersion protocol_version, impl::SerializeDirection direction, impl::BufferView* buffer_view);
+  bool SerializeBody(impl::SerializeDirection direction, impl::BufferView* buffer_view);
 
   uint8_t packet_type_ = 0;
   uint32_t application_id_ = 0;

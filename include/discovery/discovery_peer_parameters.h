@@ -3,36 +3,27 @@
 #include <chrono>
 #include <cstdint>
 
-#include "discovery_protocol_version.h"
-
 namespace discovery {
 
+// Configuration for a Peer instance.
+//
+// Controls which role the peer plays (discoverer, discoverable, or both),
+// the UDP port and transport mode (broadcast/multicast), send interval, and
+// how long a silent peer is retained before expiry.
 class PeerParameters {
  public:
+  // Determines what constitutes the "same" peer when deduplicating discovered
+  // entries. kIp treats any port on a given address as the same peer; kIpAndPort
+  // requires both address and port to match.
   enum class SamePeerMode {
     kIp,
     kIpAndPort,
   };
 
-  // Convenience aliases for backward compatibility
   static constexpr SamePeerMode kSamePeerIp = SamePeerMode::kIp;
   static constexpr SamePeerMode kSamePeerIpAndPort = SamePeerMode::kIpAndPort;
 
   PeerParameters() = default;
-
-  ProtocolVersion min_supported_protocol_version() const { return min_supported_protocol_version_; }
-
-  ProtocolVersion max_supported_protocol_version() const { return max_supported_protocol_version_; }
-
-  void set_supported_protocol_version(ProtocolVersion version) {
-    min_supported_protocol_version_ = version;
-    max_supported_protocol_version_ = version;
-  }
-
-  void set_supported_protocol_versions(ProtocolVersion min_version, ProtocolVersion max_version) {
-    min_supported_protocol_version_ = min_version;
-    max_supported_protocol_version_ = max_version;
-  }
 
   uint32_t application_id() const { return application_id_; }
   void set_application_id(uint32_t application_id) { application_id_ = application_id; }
@@ -56,7 +47,7 @@ class PeerParameters {
     }
   }
 
-  // For backward compatibility
+  // Convenience overloads accepting raw milliseconds.
   int64_t send_timeout_ms() const { return send_timeout_.count(); }
   void set_send_timeout_ms(int64_t timeout_ms) {
     if (timeout_ms >= 0) {
@@ -71,7 +62,7 @@ class PeerParameters {
     }
   }
 
-  // For backward compatibility
+  // Convenience overloads accepting raw milliseconds.
   int64_t discovered_peer_ttl_ms() const { return discovered_peer_ttl_.count(); }
   void set_discovered_peer_ttl_ms(int64_t ttl_ms) {
     if (ttl_ms >= 0) {
@@ -92,8 +83,6 @@ class PeerParameters {
   void set_same_peer_mode(SamePeerMode same_peer_mode) { same_peer_mode_ = same_peer_mode; }
 
  private:
-  ProtocolVersion min_supported_protocol_version_ = kProtocolVersionCurrent;
-  ProtocolVersion max_supported_protocol_version_ = kProtocolVersionCurrent;
   uint32_t application_id_ = 0;
   bool can_use_broadcast_ = true;
   bool can_use_multicast_ = false;
