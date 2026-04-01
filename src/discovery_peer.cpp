@@ -2,16 +2,15 @@
 
 #include <algorithm>
 #include <chrono>
-#include <cstring>
 #include <iostream>
+#include <limits>
 #include <mutex>
 #include <random>
 #include <thread>
-#include <vector>
 
 #include "discovery/discovery_protocol.h"
 
-// sockets
+// Platform socket API includes and type aliases.
 #if defined(_WIN32)
 #define NOMINMAX
 #include <winsock2.h>
@@ -33,12 +32,11 @@ namespace {
 
 void InitSockets() {
 #if defined(_WIN32)
-  static bool initialized = false;
-  if (!initialized) {
+  static std::once_flag init_flag;
+  std::call_once(init_flag, []() {
     WSADATA wsa_data;
     WSAStartup(MAKEWORD(2, 2), &wsa_data);
-    initialized = true;
-  }
+  });
 #endif
 }
 
@@ -78,9 +76,10 @@ bool IsRightTime(int64_t last_action_time, int64_t now_time, int64_t timeout, in
 }
 
 uint32_t MakeRandomId() {
-  static std::random_device rd;
-  static std::mt19937 gen(rd());
+  static std::mutex gen_mutex;
+  static std::mt19937 gen(std::random_device{}());
   static std::uniform_int_distribution<uint32_t> dis;
+  std::lock_guard<std::mutex> lock(gen_mutex);
   return dis(gen);
 }
 
@@ -110,9 +109,8 @@ class PeerEnv : public PeerEnvInterface, public std::enable_shared_from_this<Pee
     }
   }
 
-  // Non-copyable
-  PeerEnv(const PeerEnv&) = delete;
-  PeerEnv& operator=(const PeerEnv&) = delete;
+  PeerEnv(const PeerEnv&) = delete;             // Non-copyable.
+  PeerEnv& operator=(const PeerEnv&) = delete;  // Non-copyable.
 
   bool Start(const PeerParameters& parameters, const std::string& user_data) {
     parameters_ = parameters;
@@ -201,7 +199,8 @@ class PeerEnv : public PeerEnvInterface, public std::enable_shared_from_this<Pee
         return false;
       }
 
-      // TODO: Implement the way to unblock recvfrom without timeouting.
+      // TODO(sunwenqi): Replace timeout-based unblocking with a pipe/eventfd
+      // so that shutdown latency is not bounded by the 1-second timeout.
       SetSocketTimeout(binding_sock_, SO_RCVTIMEO, 1000);
     }
 
@@ -235,40 +234,34 @@ class PeerEnv : public PeerEnvInterface, public std::enable_shared_from_this<Pee
       }
 
       if (should_exit) {
-        for (int protocol_version = static_cast<int>(parameters_.min_supported_protocol_version());
-             protocol_version <= static_cast<int>(parameters_.max_supported_protocol_version()); ++protocol_version) {
-          sendPacket(static_cast<ProtocolVersion>(protocol_version), kPacketIAmOutOfHere);
-        }
+        sendPacket(kPacketIAmOutOfHere);
         return;
       }
 
       int64_t cur_time_ms = NowTime();
-      int64_t to_sleep_ms = 0;
+      int64_t to_sleep_ms = std::numeric_limits<int64_t>::max();
 
       if (parameters_.can_be_discovered()) {
-        if (IsRightTime(last_send_time_ms, cur_time_ms, parameters_.send_timeout_ms(), to_sleep_ms)) {
-          for (int protocol_version = static_cast<int>(parameters_.min_supported_protocol_version());
-               protocol_version <= static_cast<int>(parameters_.max_supported_protocol_version()); ++protocol_version) {
-            sendPacket(static_cast<ProtocolVersion>(protocol_version), kPacketIAmHere);
-          }
+        int64_t next_send_wait = 0;
+        if (IsRightTime(last_send_time_ms, cur_time_ms, parameters_.send_timeout_ms(), next_send_wait)) {
+          sendPacket(kPacketIAmHere);
           last_send_time_ms = cur_time_ms;
         }
+        to_sleep_ms = next_send_wait;
       }
 
       if (parameters_.can_discover()) {
-        int64_t to_sleep_until_next_delete_idle = 0;
-        if (IsRightTime(last_delete_idle_ms, cur_time_ms, parameters_.discovered_peer_ttl_ms(),
-                        to_sleep_until_next_delete_idle)) {
+        int64_t next_idle_wait = 0;
+        if (IsRightTime(last_delete_idle_ms, cur_time_ms, parameters_.discovered_peer_ttl_ms(), next_idle_wait)) {
           deleteIdle(cur_time_ms);
           last_delete_idle_ms = cur_time_ms;
         }
-
-        if (to_sleep_ms > to_sleep_until_next_delete_idle) {
-          to_sleep_ms = to_sleep_until_next_delete_idle;
-        }
+        to_sleep_ms = std::min(to_sleep_ms, next_idle_wait);
       }
 
-      SleepFor(std::chrono::milliseconds(to_sleep_ms));
+      if (to_sleep_ms > 0 && to_sleep_ms != std::numeric_limits<int64_t>::max()) {
+        SleepFor(std::chrono::milliseconds(to_sleep_ms));
+      }
     }
   }
 
@@ -305,48 +298,36 @@ class PeerEnv : public PeerEnvInterface, public std::enable_shared_from_this<Pee
  private:
   void processReceivedBuffer(int64_t cur_time_ms, const IpPort& from, const std::string& buffer) {
     Packet packet;
-    ProtocolVersion packet_version = packet.Parse(buffer);
-    bool is_supported_packet_version =
-        (static_cast<int>(packet_version) >= static_cast<int>(parameters_.min_supported_protocol_version()) &&
-         static_cast<int>(packet_version) <= static_cast<int>(parameters_.max_supported_protocol_version()));
+    if (!packet.Parse(buffer)) {
+      return;
+    }
 
-    if (packet_version != kProtocolVersionUnknown && is_supported_packet_version) {
-      bool accept_packet = false;
-      if (parameters_.application_id() == packet.application_id()) {
-        if (!parameters_.discover_self()) {
-          if (packet.peer_id() != peer_id_) {
-            accept_packet = true;
-          }
+    bool accept_packet = (parameters_.application_id() == packet.application_id()) &&
+                         (parameters_.discover_self() || packet.peer_id() != peer_id_);
+
+    if (accept_packet) {
+      std::lock_guard<std::mutex> lock(mutex_);
+
+      auto find_it =
+          std::find_if(discovered_peers_.begin(), discovered_peers_.end(), [this, &from](const DiscoveredPeer& peer) {
+            return Same(parameters_.same_peer_mode(), peer.ip_port(), from);
+          });
+
+      if (packet.packet_type() == kPacketIAmHere) {
+        if (find_it == discovered_peers_.end()) {
+          discovered_peers_.emplace_back();
+          discovered_peers_.back().set_ip_port(from);
+          discovered_peers_.back().SetUserData(packet.user_data(), packet.snapshot_index());
+          discovered_peers_.back().set_last_updated(cur_time_ms);
         } else {
-          accept_packet = true;
+          if (find_it->last_received_packet() < packet.snapshot_index()) {
+            find_it->SetUserData(packet.user_data(), packet.snapshot_index());
+          }
+          find_it->set_last_updated(cur_time_ms);
         }
-      }
-
-      if (accept_packet) {
-        std::lock_guard<std::mutex> lock(mutex_);
-
-        auto find_it =
-            std::find_if(discovered_peers_.begin(), discovered_peers_.end(), [this, &from](const DiscoveredPeer& peer) {
-              return Same(parameters_.same_peer_mode(), peer.ip_port(), from);
-            });
-
-        if (packet.packet_type() == kPacketIAmHere) {
-          if (find_it == discovered_peers_.end()) {
-            discovered_peers_.emplace_back();
-            discovered_peers_.back().set_ip_port(from);
-            discovered_peers_.back().SetUserData(packet.user_data(), packet.snapshot_index());
-            discovered_peers_.back().set_last_updated(cur_time_ms);
-          } else {
-            bool update_user_data = (find_it->last_received_packet() < packet.snapshot_index());
-            if (update_user_data) {
-              find_it->SetUserData(packet.user_data(), packet.snapshot_index());
-            }
-            find_it->set_last_updated(cur_time_ms);
-          }
-        } else if (packet.packet_type() == kPacketIAmOutOfHere) {
-          if (find_it != discovered_peers_.end()) {
-            discovered_peers_.erase(find_it);
-          }
+      } else if (packet.packet_type() == kPacketIAmOutOfHere) {
+        if (find_it != discovered_peers_.end()) {
+          discovered_peers_.erase(find_it);
         }
       }
     }
@@ -360,7 +341,7 @@ class PeerEnv : public PeerEnvInterface, public std::enable_shared_from_this<Pee
     });
   }
 
-  void sendPacket(ProtocolVersion protocol_version, PacketType packet_type) {
+  void sendPacket(PacketType packet_type) {
     std::string user_data;
     uint64_t packet_idx;
     {
@@ -377,27 +358,30 @@ class PeerEnv : public PeerEnvInterface, public std::enable_shared_from_this<Pee
     packet.SwapUserData(user_data);
 
     std::string packet_data;
-    if (!packet.Serialize(protocol_version, packet_data)) {
+    if (!packet.Serialize(packet_data)) {
       return;
     }
 
-    sockaddr_in addr{};
-
     if (parameters_.can_use_broadcast()) {
+      sockaddr_in addr{};
       addr.sin_family = AF_INET;
       addr.sin_port = htons(parameters_.port());
       addr.sin_addr.s_addr = htonl(INADDR_BROADCAST);
+      if (sendto(sock_, packet_data.data(), static_cast<int>(packet_data.size()), 0,
+                 reinterpret_cast<sockaddr*>(&addr), sizeof(sockaddr_in)) < 0) {
+        std::cerr << "discovery::Peer failed to send broadcast packet." << std::endl;
+      }
     }
 
     if (parameters_.can_use_multicast()) {
+      sockaddr_in addr{};
       addr.sin_family = AF_INET;
       addr.sin_port = htons(parameters_.port());
       addr.sin_addr.s_addr = htonl(parameters_.multicast_group_address());
-    }
-
-    if (sendto(sock_, packet_data.data(), static_cast<int>(packet_data.size()), 0,
-               reinterpret_cast<sockaddr*>(&addr), sizeof(sockaddr_in)) < 0) {
-      std::cerr << "discovery::Peer failed to send packet." << std::endl;
+      if (sendto(sock_, packet_data.data(), static_cast<int>(packet_data.size()), 0,
+                 reinterpret_cast<sockaddr*>(&addr), sizeof(sockaddr_in)) < 0) {
+        std::cerr << "discovery::Peer failed to send multicast packet." << std::endl;
+      }
     }
   }
 
@@ -417,10 +401,10 @@ class PeerEnv : public PeerEnvInterface, public std::enable_shared_from_this<Pee
 
 Peer::Peer() = default;
 
-Peer::~Peer() { Stop(false); }
+Peer::~Peer() { StopImpl(false); }
 
 bool Peer::Start(const PeerParameters& parameters, const std::string& user_data) {
-  Stop(false);
+  StopImpl(false);
 
   auto env = std::make_shared<impl::PeerEnv>();
   if (!env->Start(parameters, user_data)) {
@@ -429,7 +413,7 @@ bool Peer::Start(const PeerParameters& parameters, const std::string& user_data)
 
   env_ = env;
 
-  // Capture shared_ptr by value to keep env alive
+  // Capture env by value so the threads keep it alive beyond Peer's lifetime.
   sending_thread_ = std::make_unique<std::thread>([env]() { env->SendingThreadFunc(); });
 
   if (parameters.can_discover()) {
@@ -452,11 +436,13 @@ std::list<DiscoveredPeer> Peer::ListDiscovered() const {
   return {};
 }
 
-void Peer::Stop() { Stop(false); }
+void Peer::Stop() { StopImpl(false); }
 
-void Peer::StopAndWaitForThreads() { Stop(true); }
+void Peer::StopAndWaitForThreads() { StopImpl(true); }
 
-void Peer::Stop(bool wait_for_threads) {
+void Peer::Stop(bool wait_for_threads) { StopImpl(wait_for_threads); }
+
+void Peer::StopImpl(bool wait_for_threads) {
   if (!env_) {
     return;
   }
