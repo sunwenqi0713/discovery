@@ -2,21 +2,21 @@
 
 #include <chrono>
 #include <cstdint>
+#include <string>
 
 namespace discovery {
 
-// Configuration for a Peer instance.
-//
-// Controls which role the peer plays (discoverer, discoverable, or both),
-// the UDP port and transport mode (broadcast/multicast), send interval, and
-// how long a silent peer is retained before expiry.
+/// @brief Configuration for a `Peer` instance.
+/// @details Controls which role the peer plays (discoverer, discoverable, or
+/// both), the UDP port and transport mode (broadcast/multicast), send
+/// interval, and how long a silent peer is retained before expiry.
 class PeerParameters {
  public:
-  // Determines what constitutes the "same" peer when deduplicating discovered
-  // entries. kIp treats any port on a given address as the same peer; kIpAndPort
-  // requires both address and port to match.
+  /// @brief Determines how discovered peers are deduplicated.
   enum class SamePeerMode {
+    /// Match peers by IP address only.
     kIp,
+    /// Match peers by both IP address and port.
     kIpAndPort,
   };
 
@@ -25,62 +25,113 @@ class PeerParameters {
 
   PeerParameters() = default;
 
-  uint32_t application_id() const { return application_id_; }
-  void set_application_id(uint32_t application_id) { application_id_ = application_id; }
+  /// @brief Returns the application identifier used for peer filtering.
+  uint32_t applicationId() const { return application_id_; }
+  /// @brief Sets the application identifier used for peer filtering.
+  /// @param application_id Application identifier shared by compatible peers.
+  void setApplicationId(uint32_t application_id) { application_id_ = application_id; }
 
-  bool can_use_broadcast() const { return can_use_broadcast_; }
-  void set_can_use_broadcast(bool can_use_broadcast) { can_use_broadcast_ = can_use_broadcast; }
+  /// @brief Returns whether UDP broadcast is enabled.
+  bool canUseBroadcast() const { return can_use_broadcast_; }
+  /// @brief Enables or disables UDP broadcast.
+  /// @param can_use_broadcast `true` to enable broadcast.
+  void setCanUseBroadcast(bool can_use_broadcast) { can_use_broadcast_ = can_use_broadcast; }
 
-  bool can_use_multicast() const { return can_use_multicast_; }
-  void set_can_use_multicast(bool can_use_multicast) { can_use_multicast_ = can_use_multicast; }
+  /// @brief Returns whether UDP multicast is enabled.
+  bool canUseMulticast() const { return can_use_multicast_; }
+  /// @brief Enables or disables UDP multicast.
+  /// @param can_use_multicast `true` to enable multicast.
+  void setCanUseMulticast(bool can_use_multicast) { can_use_multicast_ = can_use_multicast; }
 
+  /// @brief Returns the UDP port used for discovery traffic.
   uint16_t port() const { return port_; }
-  void set_port(uint16_t port) { port_ = port; }
+  /// @brief Sets the UDP port used for discovery traffic.
+  /// @param port UDP port number.
+  void setPort(uint16_t port) { port_ = port; }
 
-  uint32_t multicast_group_address() const { return multicast_group_address_; }
-  void set_multicast_group_address(uint32_t group_address) { multicast_group_address_ = group_address; }
+  /// @brief Returns the multicast group address in host byte order.
+  uint32_t multicastGroupAddress() const { return multicast_group_address_; }
+  /// @brief Sets the multicast group address in host byte order.
+  /// @param multicast_group_address Multicast group address.
+  void setMulticastGroupAddress(uint32_t multicast_group_address) {
+    multicast_group_address_ = multicast_group_address;
+  }
 
-  std::chrono::milliseconds send_timeout() const { return send_timeout_; }
-  void set_send_timeout(std::chrono::milliseconds timeout) {
+  /// @brief Returns the send interval.
+  std::chrono::milliseconds sendTimeout() const { return send_timeout_; }
+  /// @brief Sets the send interval.
+  /// @param timeout Non-negative send interval.
+  void setSendTimeout(std::chrono::milliseconds timeout) {
     if (timeout.count() >= 0) {
       send_timeout_ = timeout;
     }
   }
 
-  // Convenience overloads accepting raw milliseconds.
-  int64_t send_timeout_ms() const { return send_timeout_.count(); }
-  void set_send_timeout_ms(int64_t timeout_ms) {
+  /// @brief Returns the send interval in milliseconds.
+  int64_t sendTimeoutMs() const { return send_timeout_.count(); }
+  /// @brief Sets the send interval in milliseconds.
+  /// @param timeout_ms Non-negative send interval in milliseconds.
+  void setSendTimeoutMs(int64_t timeout_ms) {
     if (timeout_ms >= 0) {
       send_timeout_ = std::chrono::milliseconds(timeout_ms);
     }
   }
 
-  std::chrono::milliseconds discovered_peer_ttl() const { return discovered_peer_ttl_; }
-  void set_discovered_peer_ttl(std::chrono::milliseconds ttl) {
+  /// @brief Returns the time-to-live for discovered peers.
+  std::chrono::milliseconds discoveredPeerTtl() const { return discovered_peer_ttl_; }
+  /// @brief Sets the time-to-live for discovered peers.
+  /// @param ttl Non-negative peer TTL.
+  void setDiscoveredPeerTtl(std::chrono::milliseconds ttl) {
     if (ttl.count() >= 0) {
       discovered_peer_ttl_ = ttl;
     }
   }
 
-  // Convenience overloads accepting raw milliseconds.
-  int64_t discovered_peer_ttl_ms() const { return discovered_peer_ttl_.count(); }
-  void set_discovered_peer_ttl_ms(int64_t ttl_ms) {
+  /// @brief Returns the peer TTL in milliseconds.
+  int64_t discoveredPeerTtlMs() const { return discovered_peer_ttl_.count(); }
+  /// @brief Sets the peer TTL in milliseconds.
+  /// @param ttl_ms Non-negative peer TTL in milliseconds.
+  void setDiscoveredPeerTtlMs(int64_t ttl_ms) {
     if (ttl_ms >= 0) {
       discovered_peer_ttl_ = std::chrono::milliseconds(ttl_ms);
     }
   }
 
-  bool can_be_discovered() const { return can_be_discovered_; }
-  void set_can_be_discovered(bool can_be_discovered) { can_be_discovered_ = can_be_discovered; }
+  /// @brief Returns whether this peer advertises itself.
+  bool canBeDiscovered() const { return can_be_discovered_; }
+  /// @brief Enables or disables advertising this peer.
+  /// @param can_be_discovered `true` to advertise this peer.
+  void setCanBeDiscovered(bool can_be_discovered) { can_be_discovered_ = can_be_discovered; }
 
-  bool can_discover() const { return can_discover_; }
-  void set_can_discover(bool can_discover) { can_discover_ = can_discover; }
+  /// @brief Returns whether this peer listens for others.
+  bool canDiscover() const { return can_discover_; }
+  /// @brief Enables or disables discovery of other peers.
+  /// @param can_discover `true` to listen for peers.
+  void setCanDiscover(bool can_discover) { can_discover_ = can_discover; }
 
-  bool discover_self() const { return discover_self_; }
-  void set_discover_self(bool discover_self) { discover_self_ = discover_self; }
+  /// @brief Returns whether packets sent by this peer are processed locally.
+  bool discoverSelf() const { return discover_self_; }
+  /// @brief Enables or disables self-discovery.
+  /// @param discover_self `true` to include this peer in discovery results.
+  void setDiscoverSelf(bool discover_self) { discover_self_ = discover_self; }
 
-  SamePeerMode same_peer_mode() const { return same_peer_mode_; }
-  void set_same_peer_mode(SamePeerMode same_peer_mode) { same_peer_mode_ = same_peer_mode; }
+  /// @brief Returns the deduplication mode used for discovered peers.
+  SamePeerMode samePeerMode() const { return same_peer_mode_; }
+  /// @brief Sets the deduplication mode used for discovered peers.
+  /// @param same_peer_mode Deduplication mode.
+  void setSamePeerMode(SamePeerMode same_peer_mode) { same_peer_mode_ = same_peer_mode; }
+
+  /// @brief Validates parameter consistency.
+  /// @return An empty string when valid; otherwise a human-readable error.
+  std::string validate() const {
+    if (port_ == 0) return "port must not be 0";
+    if (!can_use_broadcast_ && !can_use_multicast_) return "at least one of broadcast or multicast must be enabled";
+    if (!can_discover_ && !can_be_discovered_)
+      return "at least one of can_discover or can_be_discovered must be enabled";
+    if (can_use_multicast_ && (multicast_group_address_ & 0xF0000000u) != 0xE0000000u)
+      return "multicast_group_address is not in the 224.0.0.0/4 range";
+    return {};
+  }
 
  private:
   uint32_t application_id_ = 0;

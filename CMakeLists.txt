@@ -31,7 +31,7 @@ set(discovery_HEADERS
 set(discovery_SOURCES
     src/discovery_protocol.cpp
     src/discovery_ip_port.cpp
-    src/discovery_peer.cpp
+    src/discovery_peer_env.cpp
 )
 
 # Create library

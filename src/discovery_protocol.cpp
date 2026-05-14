@@ -1,129 +1,68 @@
 #include "discovery/discovery_protocol.h"
 
 namespace discovery {
-namespace impl {
 
-bool SerializeString(SerializeDirection direction, std::string* value, size_t value_size, BufferView* buffer_view) {
-  if (direction == SerializeDirection::kSerialize) {
-    buffer_view->InsertBack(*value, value_size);
-  } else {
-    if (!buffer_view->CanRead(value_size)) {
-      return false;
-    }
-    value->resize(value_size);
-    for (size_t i = 0; i < value_size; ++i) {
-      (*value)[i] = buffer_view->Read();
-    }
-  }
+bool Packet::serialize(std::string& buffer_out) {
+  if (user_data_.size() > kMaxUserDataSize) return false;
+
+  impl::Writer writer(buffer_out);
+  for (char magic_byte : impl::kMagic) writer.writeByte(static_cast<uint8_t>(magic_byte));
+  writer.writeUInt(impl::kVersion);
+  writeBody(writer);
   return true;
 }
 
-PacketType GetPacketType(uint8_t packet_type) {
-  if (packet_type == static_cast<uint8_t>(kPacketIAmHere)) {
-    return kPacketIAmHere;
-  } else if (packet_type == static_cast<uint8_t>(kPacketIAmOutOfHere)) {
-    return kPacketIAmOutOfHere;
-  }
-  return kPacketTypeUnknown;
+void Packet::writeBody(impl::Writer& writer) {
+  writer.writeUInt<uint8_t>(0);  // reserved[0]
+  writer.writeUInt<uint8_t>(0);  // reserved[1]
+  writer.writeUInt<uint8_t>(0);  // reserved[2]
+
+  writer.writeUInt(packet_type_);
+  writer.writeUInt(application_id_);
+  writer.writeUInt(peer_id_);
+  writer.writeUInt(snapshot_index_);
+
+  const auto user_data_size = static_cast<uint16_t>(user_data_.size());
+  writer.writeUInt(user_data_size);
+  writer.writeBytes(user_data_, user_data_size);
 }
 
-}  // namespace impl
+bool Packet::parse(const std::string& buffer) {
+  impl::Reader reader(buffer.data(), buffer.size());
 
-bool Packet::Serialize(std::string& buffer_out) {
-  if (user_data_.size() > kMaxUserDataSize) {
-    return false;
-  }
-  impl::BufferView buffer_view(&buffer_out);
-  return SerializeBody(impl::kSerialize, &buffer_view);
-}
-
-bool Packet::Parse(const std::string& buffer) {
-  impl::BufferView buffer_view(buffer.data(), buffer.size());
-
-  // Verify the 4-byte magic signature that identifies this protocol.
-  const char kMagic[] = {'D', 'S', 'C', 'V'};
-  for (char expected : kMagic) {
-    uint8_t byte = 0;
-    if (!impl::SerializeUnsignedIntegerBigEndian(impl::kParse, &byte, &buffer_view)) {
-      return false;
-    }
-    if (byte != static_cast<uint8_t>(expected)) {
-      return false;
-    }
+  for (char expected : impl::kMagic) {
+    uint8_t actual = 0;
+    if (!reader.readUInt(actual) || actual != static_cast<uint8_t>(expected)) return false;
   }
 
-  // Reject packets from unknown or future protocol versions.
-  constexpr uint8_t kCurrentVersion = 1;
   uint8_t version = 0;
-  if (!impl::SerializeUnsignedIntegerBigEndian(impl::kParse, &version, &buffer_view)) {
-    return false;
-  }
-  if (version != kCurrentVersion) {
-    return false;
-  }
+  if (!reader.readUInt(version) || version != impl::kVersion) return false;
 
-  return SerializeBody(impl::kParse, &buffer_view);
+  return parseBody(reader);
 }
 
-bool Packet::SerializeBody(impl::SerializeDirection direction, impl::BufferView* buffer_view) {
-  if (direction == impl::kSerialize) {
-    buffer_view->push_back('D');
-    buffer_view->push_back('S');
-    buffer_view->push_back('C');
-    buffer_view->push_back('V');
-    uint8_t version = 1;
-    impl::SerializeUnsignedIntegerBigEndian(impl::kSerialize, &version, buffer_view);
-  }
-
-  // Three reserved bytes follow the version field (reserved for future use).
+bool Packet::parseBody(impl::Reader& reader) {
   uint8_t reserved = 0;
   for (int i = 0; i < 3; ++i) {
-    if (!impl::SerializeUnsignedIntegerBigEndian(direction, &reserved, buffer_view)) {
-      return false;
-    }
+    if (!reader.readUInt(reserved)) return false;
   }
 
-  if (!impl::SerializeUnsignedIntegerBigEndian(direction, &packet_type_, buffer_view)) {
-    return false;
-  }
-  if (direction == impl::kParse) {
-    if (impl::GetPacketType(packet_type_) == kPacketTypeUnknown) {
-      return false;
-    }
-  }
-
-  if (!impl::SerializeUnsignedIntegerBigEndian(direction, &application_id_, buffer_view)) {
+  if (!reader.readUInt(packet_type_)) return false;
+  if (packet_type_ != static_cast<uint8_t>(kPacketIAmHere) &&
+      packet_type_ != static_cast<uint8_t>(kPacketIAmOutOfHere)) {
     return false;
   }
 
-  if (!impl::SerializeUnsignedIntegerBigEndian(direction, &peer_id_, buffer_view)) {
-    return false;
-  }
+  if (!reader.readUInt(application_id_)) return false;
+  if (!reader.readUInt(peer_id_)) return false;
+  if (!reader.readUInt(snapshot_index_)) return false;
 
-  if (!impl::SerializeUnsignedIntegerBigEndian(direction, &snapshot_index_, buffer_view)) {
-    return false;
-  }
+  uint16_t user_data_size = 0;
+  if (!reader.readUInt(user_data_size)) return false;
+  if (user_data_size > kMaxUserDataSize) return false;
+  if (reader.remaining() != user_data_size) return false;
 
-  auto user_data_size = static_cast<uint16_t>(user_data_.size());
-  if (!impl::SerializeUnsignedIntegerBigEndian(direction, &user_data_size, buffer_view)) {
-    return false;
-  }
-
-  if (direction == impl::kParse) {
-    if (user_data_size > kMaxUserDataSize) {
-      return false;
-    }
-    // Ensure the remaining bytes match the declared payload length exactly.
-    if (buffer_view->LeftUnparsed() != user_data_size) {
-      return false;
-    }
-  }
-
-  if (!impl::SerializeString(direction, &user_data_, user_data_size, buffer_view)) {
-    return false;
-  }
-
-  return true;
+  return reader.readBytes(user_data_, user_data_size);
 }
 
 }  // namespace discovery

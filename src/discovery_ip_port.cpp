@@ -4,15 +4,15 @@
 
 namespace discovery {
 
-std::string IpToString(uint32_t ip) {
+std::string ipToString(uint32_t ip) {
   std::ostringstream ss;
   ss << ((ip >> 24) & 0xff) << "." << ((ip >> 16) & 0xff) << "." << ((ip >> 8) & 0xff) << "." << (ip & 0xff);
   return ss.str();
 }
 
-std::string IpPortToString(const IpPort& ip_port) {
+std::string ipPortToString(const IpPort& ip_port) {
   std::ostringstream ss;
-  ss << IpToString(ip_port.ip()) << ":" << ip_port.port();
+  ss << ipToString(ip_port.ip()) << ":" << ip_port.port();
   return ss.str();
 }
 
