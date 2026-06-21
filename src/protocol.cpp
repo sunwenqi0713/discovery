@@ -1,4 +1,4 @@
-#include "discovery/discovery_protocol.h"
+#include "discovery/protocol.h"
 
 namespace discovery {
 

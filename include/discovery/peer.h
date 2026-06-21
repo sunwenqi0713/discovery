@@ -5,8 +5,8 @@
 #include <string>
 #include <thread>
 
-#include "discovery_discovered_peer.h"
-#include "discovery_peer_parameters.h"
+#include "discovered_peer.h"
+#include "peer_parameters.h"
 
 namespace discovery {
 

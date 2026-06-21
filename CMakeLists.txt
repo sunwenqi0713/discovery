@@ -21,17 +21,17 @@ option(discovery_BUILD_EXAMPLES "Build examples" ON)
 
 # Source files
 set(discovery_HEADERS
-    include/discovery/discovery_protocol.h
-    include/discovery/discovery_ip_port.h
-    include/discovery/discovery_peer_parameters.h
-    include/discovery/discovery_peer.h
-    include/discovery/discovery_discovered_peer.h
+    include/discovery/protocol.h
+    include/discovery/ip_port.h
+    include/discovery/peer_parameters.h
+    include/discovery/peer.h
+    include/discovery/discovered_peer.h
 )
 
 set(discovery_SOURCES
-    src/discovery_protocol.cpp
-    src/discovery_ip_port.cpp
-    src/discovery_peer_env.cpp
+    src/protocol.cpp
+    src/ip_port.cpp
+    src/peer.cpp
 )
 
 # Create library

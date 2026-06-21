@@ -1,4 +1,4 @@
-#include "discovery/discovery_ip_port.h"
+#include "discovery/ip_port.h"
 
 #include <sstream>
 

@@ -3,7 +3,7 @@
 #include <cstdint>
 #include <string>
 
-#include "discovery_ip_port.h"
+#include "ip_port.h"
 
 namespace discovery {
 

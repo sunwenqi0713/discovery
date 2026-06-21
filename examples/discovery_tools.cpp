@@ -6,7 +6,7 @@
 #include <string>
 #include <thread>
 
-#include "discovery/discovery_peer.h"
+#include "discovery/peer.h"
 
 namespace {
 

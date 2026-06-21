@@ -8,8 +8,8 @@
 #include <random>
 #include <thread>
 
-#include "discovery/discovery_peer.h"
-#include "discovery/discovery_protocol.h"
+#include "discovery/peer.h"
+#include "discovery/protocol.h"
 
 // ============================================================================
 // Platform socket abstraction
